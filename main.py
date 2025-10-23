@@ -1,126 +1,121 @@
+import os
 import random
-from telegram import Update
+from telegram import Update, ForceReply
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ========================
-# CẤU HÌNH BOT
-# ========================
-import os
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Lấy token từ Replit Secret
+# Đọc token từ biến môi trường
+TOKEN = os.getenv("BOT_TOKEN")
 
-# Đọc từ điển Vietlex
+# Đọc từ điển
+WORDS = set()
 with open("vietlex_words.txt", "r", encoding="utf-8") as f:
-    VIETLEX_WORDS = set(w.strip().lower() for w in f if w.strip())
+    for line in f:
+        WORDS.add(line.strip().lower())
 
-# Dữ liệu game
-games = {}  # group_id -> { 'current_word': str, 'players': {}, 'turn_order': [] }
+# Dữ liệu trò chơi
+games = {}  # chat_id -> { "current": str, "players": {user_id: score} }
 
-# ========================
-# HÀM TRỢ GIÚP
-# ========================
-def get_last_char(word: str) -> str:
-    for c in reversed(word):
-        if c.isalpha():
-            return c
-    return ""
-
-# ========================
-# LỆNH BẮT ĐẦU TRÒ CHƠI
-# ========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👑 Chào mừng đến với trò *VUA TIẾNG VIỆT*! 👑\n\n"
-        "Dùng /newgame để bắt đầu trò chơi mới.\n"
-        "Gõ từ đầu tiên để bắt đầu chuỗi!"
+        "🎮 Chào mừng đến với trò *Vua Tiếng Việt*!\n"
+        "Gõ /newgame để bắt đầu trò mới hoặc /join để tham gia.",
+        parse_mode="Markdown"
     )
 
-# ========================
-# TẠO GAME MỚI
-# ========================
 async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     games[chat_id] = {
-        "current_word": None,
-        "players": {},
-        "turn_order": [],
+        "current": "",
+        "players": {}
     }
-    await update.message.reply_text("🎮 Trò chơi mới đã được khởi tạo! Ai cũng có thể nhập từ để bắt đầu.")
+    await update.message.reply_text("🆕 Trò mới bắt đầu! Ai cũng có thể /join để tham gia!")
 
-# ========================
-# KIỂM TRA TỪ NGƯỜI CHƠI NHẬP
-# ========================
-async def handle_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def join_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    player = update.effective_user.first_name
-    word = update.message.text.strip().lower()
+    user = update.effective_user
 
     if chat_id not in games:
-        await update.message.reply_text("❗ Chưa có trò chơi nào đang diễn ra. Gõ /newgame để bắt đầu.")
+        await update.message.reply_text("❗ Chưa có trò chơi nào. Gõ /newgame để bắt đầu.")
         return
+
+    games[chat_id]["players"].setdefault(user.id, 0)
+    await update.message.reply_text(f"✅ {user.first_name} đã tham gia trò chơi!")
+
+async def current_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in games or not games[chat_id]["current"]:
+        await update.message.reply_text("📜 Chưa có từ nào. Hãy nhập từ đầu tiên!")
+    else:
+        await update.message.reply_text(f"Từ hiện tại là: *{games[chat_id]['current']}*", parse_mode="Markdown")
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    text = update.message.text.strip().lower()
+
+    if chat_id not in games:
+        return  # chưa bắt đầu game
 
     game = games[chat_id]
 
-    # Kiểm tra hợp lệ
-    if word not in VIETLEX_WORDS:
-        await update.message.reply_text(f"❌ '{word}' không có trong từ điển Vietlex.")
+    # Kiểm tra tính hợp lệ
+    if text not in WORDS:
+        await update.message.reply_text(f"❌ '{text}' không có trong từ điển!")
         return
 
-    # Kiểm tra chữ cái đầu có khớp chữ cuối không (nếu đã có current_word)
-    if game["current_word"]:
-        last_char = get_last_char(game["current_word"])
-        if not word.startswith(last_char):
-            await update.message.reply_text(
-                f"⚠️ '{word}' phải bắt đầu bằng chữ '{last_char.upper()}' của từ '{game['current_word']}'."
-            )
-            return
+    # Nếu chưa có từ đầu tiên → đặt từ đầu tiên
+    if not game["current"]:
+        game["current"] = text
+        game["players"].setdefault(user.id, 0)
+        await update.message.reply_text(f"✅ Từ đầu tiên là '{text}'. Tiếp tục nào!")
+        return
 
-    # Ghi điểm
-    game["players"].setdefault(player, 0)
-    game["players"][player] += 1
-    game["current_word"] = word
+    # Kiểm tra ký tự cuối và đầu
+    last_char = game["current"][-1]
+    if text[0] != last_char:
+        await update.message.reply_text(f"⚠️ Từ '{text}' phải bắt đầu bằng chữ '{last_char}'!")
+        return
 
+    # Nếu hợp lệ
+    game["current"] = text
+    game["players"][user.id] = game["players"].get(user.id, 0) + 1
     await update.message.reply_text(
-        f"✅ '{word}' hợp lệ! ({player} được +1 điểm)\n\n👉 Người tiếp theo, hãy nhập từ bắt đầu bằng chữ '{get_last_char(word).upper()}'!"
+        f"✅ {user.first_name} được +1 điểm!\nTừ mới: *{text}*",
+        parse_mode="Markdown"
     )
 
-# ========================
-# XEM BẢNG ĐIỂM
-# ========================
 async def score(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id not in games:
-        await update.message.reply_text("❗ Chưa có trò chơi nào đang diễn ra.")
+        await update.message.reply_text("❗ Chưa có trò chơi nào.")
         return
 
-    players = games[chat_id]["players"]
-    if not players:
-        await update.message.reply_text("🏁 Chưa có ai ghi điểm.")
+    scores = games[chat_id]["players"]
+    if not scores:
+        await update.message.reply_text("📊 Chưa có ai ghi điểm.")
         return
 
-    sorted_scores = sorted(players.items(), key=lambda x: x[1], reverse=True)
-    text = "🏆 *BẢNG ĐIỂM HIỆN TẠI*\n"
-    for i, (p, s) in enumerate(sorted_scores, start=1):
-        text += f"{i}. {p}: {s} điểm\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+    leaderboard = "\n".join(
+        [f"{i+1}. {context.bot.get_chat_member(chat_id, uid).user.first_name}: {score} điểm"
+         for i, (uid, score) in enumerate(sorted(scores.items(), key=lambda x: x[1], reverse=True))]
+    )
 
-# ========================
-# RESET GAME
-# ========================
-async def end_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id in games:
-        del games[chat_id]
-    await update.message.reply_text("🛑 Trò chơi đã kết thúc!")
+    await update.message.reply_text(f"🏆 Bảng điểm:\n{leaderboard}")
 
-# ========================
-# CHẠY BOT
-# ========================
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("newgame", new_game))
-app.add_handler(CommandHandler("score", score))
-app.add_handler(CommandHandler("endgame", end_game))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_word))
+# Chạy bot
+if __name__ == "__main__":
+    if not TOKEN:
+        print("❌ Thiếu BOT_TOKEN. Vui lòng cấu hình biến môi trường.")
+        exit(1)
 
-print("🤖 Bot is running...")
-app.run_polling()
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("newgame", new_game))
+    app.add_handler(CommandHandler("join", join_game))
+    app.add_handler(CommandHandler("current", current_word))
+    app.add_handler(CommandHandler("score", score))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    print("🤖 Bot đang chạy...")
+    app.run_polling()
